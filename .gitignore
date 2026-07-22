@@ -1,5 +1,12 @@
 node_modules/
 dist/
-src-tauri/target/
+src-tauri/target/*
+!src-tauri/target/release/
+src-tauri/target/release/*
+!src-tauri/target/release/bundle/
+src-tauri/target/release/bundle/*
+!src-tauri/target/release/bundle/dmg/
+src-tauri/target/release/bundle/dmg/*
+!src-tauri/target/release/bundle/dmg/*.dmg
 src-tauri/gen/
 .DS_Store
