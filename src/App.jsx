@@ -217,6 +217,7 @@ export default function App() {
             </svg>
             Logs
           </button>
+          <span style={styles.version}>v0.2.0</span>
         </div>
       </aside>
 
@@ -412,15 +413,22 @@ const styles = {
     fontSize: 13,
   },
   sidebarFooter: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
     padding: "8px 12px",
     borderTop: "1px solid #2a2a2a",
+    flexShrink: 0,
+  },
+  version: {
+    fontSize: 11,
+    color: "#555",
     flexShrink: 0,
   },
   logsBtn: {
     display: "flex",
     alignItems: "center",
     gap: 8,
-    width: "100%",
     padding: "8px 12px",
     background: "transparent",
     color: "#888",
