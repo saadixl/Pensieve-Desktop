@@ -129,8 +129,7 @@ async fn install_ollama(app: &AppHandle) -> Result<PathBuf, String> {
 
     let decoder = flate2::read::GzDecoder::new(std::io::Cursor::new(&bytes));
     let mut archive = tar::Archive::new(decoder);
-    let dest = bin_dir.join("ollama");
-    let mut found = false;
+    let mut file_count = 0u32;
     for entry in archive.entries().map_err(|e| {
         let msg = format!("Failed to read archive: {}", e);
         append_log(app, "error", &msg);
@@ -142,27 +141,40 @@ async fn install_ollama(app: &AppHandle) -> Result<PathBuf, String> {
             msg
         })?;
         let path = entry.path().map_err(|e| e.to_string())?.to_path_buf();
-        if path.file_name().and_then(|n| n.to_str()) == Some("ollama") && entry.header().entry_type().is_file() {
-            let mut file = fs::File::create(&dest).map_err(|e| format!("Failed to write binary: {}", e))?;
-            std::io::copy(&mut entry, &mut file).map_err(|e| format!("Failed to extract binary: {}", e))?;
-            found = true;
-            break;
+        if !entry.header().entry_type().is_file() {
+            continue;
         }
+        let file_name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name.to_string(),
+            None => continue,
+        };
+        let dest = bin_dir.join(&file_name);
+        let mut file = fs::File::create(&dest).map_err(|e| format!("Failed to write {}: {}", file_name, e))?;
+        std::io::copy(&mut entry, &mut file).map_err(|e| format!("Failed to extract {}: {}", file_name, e))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = entry.header().mode().unwrap_or(0o644);
+            fs::set_permissions(&dest, fs::Permissions::from_mode(mode))
+                .map_err(|e| format!("Failed to set permissions on {}: {}", file_name, e))?;
+        }
+
+        file_count += 1;
     }
-    if !found {
+    if file_count == 0 {
+        let msg = "Archive was empty — no files extracted";
+        append_log(app, "error", msg);
+        return Err(msg.to_string());
+    }
+    let dest = bin_dir.join("ollama");
+    if !dest.exists() {
         let msg = "Could not find ollama binary in archive";
         append_log(app, "error", msg);
         return Err(msg.to_string());
     }
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&dest, fs::Permissions::from_mode(0o755))
-            .map_err(|e| format!("Failed to set permissions: {}", e))?;
-    }
-
-    append_log(app, "info", &format!("Ollama binary extracted to {}", dest.display()));
+    append_log(app, "info", &format!("Extracted {} files to {}", file_count, bin_dir.display()));
     app.emit("ollama-install-status", "Ollama installed successfully").ok();
     Ok(dest)
 }
