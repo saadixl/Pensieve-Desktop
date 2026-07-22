@@ -120,7 +120,7 @@ async fn is_ollama_running() -> bool {
         .is_ok()
 }
 
-async fn ensure_model_available() -> Result<(), String> {
+async fn ensure_model_available(app: &AppHandle) -> Result<(), String> {
     let client = reqwest::Client::new();
     let res = client
         .get(format!("{}/api/tags", OLLAMA_URL))
@@ -141,10 +141,10 @@ async fn ensure_model_available() -> Result<(), String> {
             .unwrap_or(false)
     });
     if !has_model {
+        app.emit("ollama-install-status", "Pulling llama3.2 model...").ok();
         let pull_res = client
             .post(format!("{}/api/pull", OLLAMA_URL))
             .json(&serde_json::json!({"name": "llama3.2"}))
-            .timeout(std::time::Duration::from_secs(600))
             .send()
             .await
             .map_err(|e| format!("Failed to pull model: {}", e))?;
@@ -152,9 +152,35 @@ async fn ensure_model_available() -> Result<(), String> {
             return Err("Failed to pull llama3.2 model".to_string());
         }
         let mut stream = pull_res.bytes_stream();
+        let mut line_buffer = String::new();
         while let Some(chunk) = stream.next().await {
-            let _ = chunk;
+            let chunk = chunk.map_err(|e| format!("Download interrupted: {}", e))?;
+            let text = String::from_utf8_lossy(&chunk);
+            line_buffer.push_str(&text);
+            while let Some(pos) = line_buffer.find('\n') {
+                let line: String = line_buffer[..pos].to_string();
+                line_buffer = line_buffer[pos + 1..].to_string();
+                if line.is_empty() {
+                    continue;
+                }
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&line) {
+                    let status = parsed.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                    let total = parsed.get("total").and_then(|t| t.as_u64()).unwrap_or(0);
+                    let completed = parsed.get("completed").and_then(|c| c.as_u64()).unwrap_or(0);
+                    let msg = if total > 0 {
+                        let pct = (completed as f64 / total as f64 * 100.0) as u32;
+                        let total_mb = total / (1024 * 1024);
+                        format!("{} — {}% of {} MB", status, pct, total_mb)
+                    } else {
+                        status.to_string()
+                    };
+                    if !msg.is_empty() {
+                        app.emit("ollama-install-status", &msg).ok();
+                    }
+                }
+            }
         }
+        app.emit("ollama-install-status", "Model ready").ok();
     }
     Ok(())
 }
@@ -598,11 +624,12 @@ async fn check_ollama(app: AppHandle) -> OllamaStatus {
         }
     }
 
-    let model_ready = ensure_model_available().await.is_ok();
+    app.emit("ollama-install-status", "Checking model...").ok();
+    let model_ready = ensure_model_available(&app).await.is_ok();
     let message = if model_ready {
         "Ollama is running with llama3.2".to_string()
     } else {
-        "Ollama is running but llama3.2 model is not available. Pulling it now...".to_string()
+        "Failed to pull llama3.2 model — check your internet connection".to_string()
     };
 
     OllamaStatus {
