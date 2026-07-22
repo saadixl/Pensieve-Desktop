@@ -23,7 +23,15 @@ A native macOS PDF reader with AI-powered chat and insights, built with Tauri + 
 
 Download the latest release: [Pensieve_0.1.0_aarch64.dmg](src-tauri/target/release/bundle/dmg/Pensieve_0.1.0_aarch64.dmg)
 
-Open the `.dmg` and drag Pensieve to your Applications folder. No prerequisites needed — on first launch, the app will automatically:
+Open the `.dmg` and drag Pensieve to your Applications folder.
+
+Since the app is not signed with an Apple Developer certificate, macOS may block it from opening. If that happens, run:
+
+```bash
+xattr -cr /Applications/Pensieve-Desktop.app
+```
+
+No other prerequisites needed — on first launch, the app will automatically:
 
 1. Download and install Ollama if not already on your machine
 2. Start the Ollama server
