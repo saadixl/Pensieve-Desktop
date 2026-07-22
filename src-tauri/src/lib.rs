@@ -10,6 +10,26 @@ use uuid::Uuid;
 const OLLAMA_URL: &str = "http://localhost:11434";
 
 struct OllamaProcess(Mutex<Option<std::process::Child>>);
+struct AppLogs(Mutex<Vec<LogEntry>>);
+
+#[derive(Serialize, Deserialize, Clone)]
+struct LogEntry {
+    timestamp: String,
+    level: String,
+    message: String,
+}
+
+fn append_log(app: &AppHandle, level: &str, message: &str) {
+    let entry = LogEntry {
+        timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+        level: level.to_string(),
+        message: message.to_string(),
+    };
+    if let Some(state) = app.try_state::<AppLogs>() {
+        state.0.lock().unwrap().push(entry.clone());
+    }
+    app.emit("app-log", &entry).ok();
+}
 
 impl Drop for OllamaProcess {
     fn drop(&mut self) {
@@ -56,39 +76,49 @@ fn find_ollama_binary(app: Option<&AppHandle>) -> Option<PathBuf> {
 
 async fn install_ollama(app: &AppHandle) -> Result<PathBuf, String> {
     app.emit("ollama-install-status", "Downloading Ollama...").ok();
+    append_log(app, "info", "Downloading Ollama from GitHub releases...");
 
-    let arch = if cfg!(target_arch = "aarch64") {
-        "arm64"
-    } else {
-        "amd64"
-    };
-    let url = format!(
-        "https://github.com/ollama/ollama/releases/latest/download/ollama-darwin-{}",
-        arch
-    );
+    let url = "https://github.com/ollama/ollama/releases/latest/download/ollama-darwin.tgz";
 
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::limited(10))
         .timeout(std::time::Duration::from_secs(300))
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            let msg = format!("Failed to create HTTP client: {}", e);
+            append_log(app, "error", &msg);
+            msg
+        })?;
 
     let res = client
-        .get(&url)
+        .get(url)
         .send()
         .await
-        .map_err(|e| format!("Download failed: {}", e))?;
+        .map_err(|e| {
+            let msg = format!("Download failed: {}", e);
+            append_log(app, "error", &msg);
+            msg
+        })?;
 
     if !res.status().is_success() {
-        return Err(format!("Download failed with status {}", res.status()));
+        let msg = format!("Download failed with status {}", res.status());
+        append_log(app, "error", &msg);
+        return Err(msg);
     }
 
+    append_log(app, "info", "Download complete, extracting archive...");
     app.emit("ollama-install-status", "Installing Ollama...").ok();
 
     let bytes = res
         .bytes()
         .await
-        .map_err(|e| format!("Failed to read download: {}", e))?;
+        .map_err(|e| {
+            let msg = format!("Failed to read download: {}", e);
+            append_log(app, "error", &msg);
+            msg
+        })?;
+
+    append_log(app, "info", &format!("Downloaded {} MB", bytes.len() / (1024 * 1024)));
 
     let bin_dir = app
         .path()
@@ -97,8 +127,33 @@ async fn install_ollama(app: &AppHandle) -> Result<PathBuf, String> {
         .join("bin");
     fs::create_dir_all(&bin_dir).map_err(|e| e.to_string())?;
 
+    let decoder = flate2::read::GzDecoder::new(std::io::Cursor::new(&bytes));
+    let mut archive = tar::Archive::new(decoder);
     let dest = bin_dir.join("ollama");
-    fs::write(&dest, &bytes).map_err(|e| format!("Failed to write binary: {}", e))?;
+    let mut found = false;
+    for entry in archive.entries().map_err(|e| {
+        let msg = format!("Failed to read archive: {}", e);
+        append_log(app, "error", &msg);
+        msg
+    })? {
+        let mut entry = entry.map_err(|e| {
+            let msg = format!("Bad archive entry: {}", e);
+            append_log(app, "error", &msg);
+            msg
+        })?;
+        let path = entry.path().map_err(|e| e.to_string())?.to_path_buf();
+        if path.file_name().and_then(|n| n.to_str()) == Some("ollama") && entry.header().entry_type().is_file() {
+            let mut file = fs::File::create(&dest).map_err(|e| format!("Failed to write binary: {}", e))?;
+            std::io::copy(&mut entry, &mut file).map_err(|e| format!("Failed to extract binary: {}", e))?;
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        let msg = "Could not find ollama binary in archive";
+        append_log(app, "error", msg);
+        return Err(msg.to_string());
+    }
 
     #[cfg(unix)]
     {
@@ -107,6 +162,7 @@ async fn install_ollama(app: &AppHandle) -> Result<PathBuf, String> {
             .map_err(|e| format!("Failed to set permissions: {}", e))?;
     }
 
+    append_log(app, "info", &format!("Ollama binary extracted to {}", dest.display()));
     app.emit("ollama-install-status", "Ollama installed successfully").ok();
     Ok(dest)
 }
@@ -122,39 +178,53 @@ async fn is_ollama_running() -> bool {
 
 async fn ensure_model_available(app: &AppHandle) -> Result<(), String> {
     let client = reqwest::Client::new();
+    append_log(app, "info", "Querying installed models...");
     let res = client
         .get(format!("{}/api/tags", OLLAMA_URL))
         .timeout(std::time::Duration::from_secs(5))
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            let msg = format!("Failed to query models: {}", e);
+            append_log(app, "error", &msg);
+            msg
+        })?;
     let body: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
     let models = body
         .get("models")
         .and_then(|m| m.as_array())
         .cloned()
         .unwrap_or_default();
-    let has_model = models.iter().any(|m| {
-        m.get("name")
-            .and_then(|n| n.as_str())
-            .map(|n| n.starts_with("llama3.2"))
-            .unwrap_or(false)
-    });
+    let model_names: Vec<&str> = models.iter()
+        .filter_map(|m| m.get("name").and_then(|n| n.as_str()))
+        .collect();
+    append_log(app, "info", &format!("Installed models: {}", if model_names.is_empty() { "none".to_string() } else { model_names.join(", ") }));
+    let has_model = model_names.iter().any(|n| n.starts_with("llama3.2"));
     if !has_model {
+        append_log(app, "info", "llama3.2 not found, pulling model...");
         app.emit("ollama-install-status", "Pulling llama3.2 model...").ok();
         let pull_res = client
             .post(format!("{}/api/pull", OLLAMA_URL))
             .json(&serde_json::json!({"name": "llama3.2"}))
             .send()
             .await
-            .map_err(|e| format!("Failed to pull model: {}", e))?;
+            .map_err(|e| {
+                let msg = format!("Failed to pull model: {}", e);
+                append_log(app, "error", &msg);
+                msg
+            })?;
         if !pull_res.status().is_success() {
+            append_log(app, "error", "Model pull request failed");
             return Err("Failed to pull llama3.2 model".to_string());
         }
         let mut stream = pull_res.bytes_stream();
         let mut line_buffer = String::new();
         while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| format!("Download interrupted: {}", e))?;
+            let chunk = chunk.map_err(|e| {
+                let msg = format!("Download interrupted: {}", e);
+                append_log(app, "error", &msg);
+                msg
+            })?;
             let text = String::from_utf8_lossy(&chunk);
             line_buffer.push_str(&text);
             while let Some(pos) = line_buffer.find('\n') {
@@ -176,11 +246,15 @@ async fn ensure_model_available(app: &AppHandle) -> Result<(), String> {
                     };
                     if !msg.is_empty() {
                         app.emit("ollama-install-status", &msg).ok();
+                        append_log(app, "info", &msg);
                     }
                 }
             }
         }
+        append_log(app, "info", "Model pull complete");
         app.emit("ollama-install-status", "Model ready").ok();
+    } else {
+        append_log(app, "info", "llama3.2 already available");
     }
     Ok(())
 }
@@ -233,6 +307,14 @@ fn save_metadata(app: &AppHandle, entries: &[FileEntry]) {
     fs::write(path, data).ok();
 }
 
+fn file_display_name(app: &AppHandle, file_id: &str) -> String {
+    load_metadata(app)
+        .iter()
+        .find(|e| e.id == file_id)
+        .map(|e| e.name.clone())
+        .unwrap_or_else(|| file_id.to_string())
+}
+
 fn resolve_pdf_path(app: &AppHandle, file_id: &str) -> Result<PathBuf, String> {
     let entries = load_metadata(app);
     let entry = entries
@@ -273,6 +355,7 @@ async fn stream_ollama(
     messages: Vec<serde_json::Value>,
     stream_id: &str,
 ) -> Result<String, String> {
+    append_log(app, "info", &format!("Streaming from Ollama ({} messages in context)...", messages.len()));
     let client = reqwest::Client::new();
     let res = client
         .post(format!("{}/api/chat", OLLAMA_URL))
@@ -284,10 +367,15 @@ async fn stream_ollama(
         .timeout(std::time::Duration::from_secs(120))
         .send()
         .await
-        .map_err(|e| format!("Ollama connection failed: {}. Is Ollama running?", e))?;
+        .map_err(|e| {
+            let msg = format!("Ollama connection failed: {}. Is Ollama running?", e);
+            append_log(app, "error", &msg);
+            msg
+        })?;
 
     if !res.status().is_success() {
         let error = res.text().await.unwrap_or_default();
+        append_log(app, "error", &format!("Ollama returned error: {}", error));
         app.emit(&format!("stream-error-{}", stream_id), &error)
             .ok();
         return Err(format!("Ollama error: {}", error));
@@ -353,6 +441,7 @@ fn list_files(app: AppHandle) -> Vec<FileEntry> {
 
 #[tauri::command]
 fn upload_files(app: AppHandle, paths: Vec<String>) -> Result<Vec<FileEntry>, String> {
+    append_log(&app, "info", &format!("Uploading {} file(s)...", paths.len()));
     let dir = uploads_dir(&app);
     let mut entries = load_metadata(&app);
     let mut new_entries = vec![];
@@ -360,12 +449,14 @@ fn upload_files(app: AppHandle, paths: Vec<String>) -> Result<Vec<FileEntry>, St
     for path_str in paths {
         let source = PathBuf::from(&path_str);
         if !source.exists() {
+            append_log(&app, "warn", &format!("File not found, skipping: {}", path_str));
             continue;
         }
         let ext = source
             .extension()
             .map(|e| e.to_string_lossy().to_lowercase());
         if ext.as_deref() != Some("pdf") {
+            append_log(&app, "warn", &format!("Not a PDF, skipping: {}", path_str));
             continue;
         }
 
@@ -373,15 +464,25 @@ fn upload_files(app: AppHandle, paths: Vec<String>) -> Result<Vec<FileEntry>, St
         let stored_name = format!("{}.pdf", file_id);
         let dest = dir.join(&stored_name);
 
-        let content = fs::read(&source).map_err(|e| e.to_string())?;
+        let content = fs::read(&source).map_err(|e| {
+            let msg = format!("Failed to read file {}: {}", path_str, e);
+            append_log(&app, "error", &msg);
+            msg
+        })?;
         let size = content.len() as u64;
-        fs::write(&dest, &content).map_err(|e| e.to_string())?;
+        fs::write(&dest, &content).map_err(|e| {
+            let msg = format!("Failed to write file: {}", e);
+            append_log(&app, "error", &msg);
+            msg
+        })?;
 
         let name = source
             .file_name()
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
+
+        append_log(&app, "info", &format!("Uploaded \"{}\" ({:.1} MB)", name, size as f64 / (1024.0 * 1024.0)));
 
         let entry = FileEntry {
             id: file_id,
@@ -394,6 +495,7 @@ fn upload_files(app: AppHandle, paths: Vec<String>) -> Result<Vec<FileEntry>, St
     }
 
     save_metadata(&app, &entries);
+    append_log(&app, "info", &format!("{} file(s) uploaded successfully", new_entries.len()));
     Ok(new_entries)
 }
 
@@ -404,6 +506,7 @@ fn delete_file(app: AppHandle, file_id: String) -> Result<bool, String> {
 
     if let Some(idx) = idx {
         let entry = entries.remove(idx);
+        append_log(&app, "info", &format!("Deleting file \"{}\"", entry.name));
         let pdf_path = uploads_dir(&app).join(&entry.stored_name);
         if pdf_path.exists() {
             fs::remove_file(pdf_path).ok();
@@ -413,8 +516,10 @@ fn delete_file(app: AppHandle, file_id: String) -> Result<bool, String> {
             fs::remove_file(ip).ok();
         }
         save_metadata(&app, &entries);
+        append_log(&app, "info", &format!("File \"{}\" deleted", entry.name));
         Ok(true)
     } else {
+        append_log(&app, "error", &format!("Delete failed: file {} not found", file_id));
         Err("File not found".to_string())
     }
 }
@@ -439,12 +544,17 @@ async fn chat(
     history: Vec<serde_json::Value>,
     stream_id: String,
 ) -> Result<(), String> {
+    let fname = file_display_name(&app, &file_id);
+    append_log(&app, "info", &format!("[{}] Chat: \"{}\" (history: {} messages)", fname, message, history.len()));
     let path = resolve_pdf_path(&app, &file_id)?;
 
     let mut pdf_text = extract_pdf_text(&path)?;
+    let text_len = pdf_text.len();
     if pdf_text.len() > 60000 {
         pdf_text = format!("{}\n\n[... truncated]", &pdf_text[..60000]);
+        append_log(&app, "warn", &format!("[{}] PDF text truncated from {} to 60000 chars", fname, text_len));
     }
+    append_log(&app, "info", &format!("[{}] Extracted {} chars, sending to Ollama...", fname, text_len));
 
     let system_prompt = format!(
         "You are a helpful assistant that answers questions about a PDF document. \
@@ -460,8 +570,16 @@ async fn chat(
     }
     messages.push(serde_json::json!({"role": "user", "content": message}));
 
-    stream_ollama(&app, messages, &stream_id).await?;
-    Ok(())
+    match stream_ollama(&app, messages, &stream_id).await {
+        Ok(_) => {
+            append_log(&app, "info", &format!("[{}] Chat response complete", fname));
+            Ok(())
+        }
+        Err(e) => {
+            append_log(&app, "error", &format!("[{}] Chat failed: {}", fname, e));
+            Err(e)
+        }
+    }
 }
 
 #[tauri::command]
@@ -470,11 +588,14 @@ async fn summarize_document(
     file_id: String,
     stream_id: String,
 ) -> Result<(), String> {
+    let fname = file_display_name(&app, &file_id);
+    append_log(&app, "info", &format!("[{}] Generating document summary...", fname));
     let path = resolve_pdf_path(&app, &file_id)?;
 
     let existing = load_insights_data(&app, &file_id);
     if let Some(summary) = existing.get("document_summary").and_then(|s| s.as_str()) {
         if !summary.is_empty() {
+            append_log(&app, "info", &format!("[{}] Using cached document summary", fname));
             app.emit(&format!("stream-token-{}", stream_id), summary)
                 .ok();
             app.emit(&format!("stream-done-{}", stream_id), summary)
@@ -501,11 +622,19 @@ async fn summarize_document(
         }),
     ];
 
-    let full = stream_ollama(&app, messages, &stream_id).await?;
-    let mut data = load_insights_data(&app, &file_id);
-    data["document_summary"] = serde_json::Value::String(full);
-    save_insights_data(&app, &file_id, &data);
-    Ok(())
+    match stream_ollama(&app, messages, &stream_id).await {
+        Ok(full) => {
+            let mut data = load_insights_data(&app, &file_id);
+            data["document_summary"] = serde_json::Value::String(full);
+            save_insights_data(&app, &file_id, &data);
+            append_log(&app, "info", &format!("[{}] Document summary generated and saved", fname));
+            Ok(())
+        }
+        Err(e) => {
+            append_log(&app, "error", &format!("[{}] Document summary failed: {}", fname, e));
+            Err(e)
+        }
+    }
 }
 
 #[tauri::command]
@@ -515,9 +644,12 @@ async fn summarize_conversation(
     history: Vec<serde_json::Value>,
     stream_id: String,
 ) -> Result<(), String> {
+    let fname = file_display_name(&app, &file_id);
+    append_log(&app, "info", &format!("[{}] Generating conversation summary ({} messages)...", fname, history.len()));
     resolve_pdf_path(&app, &file_id)?;
 
     if history.len() < 2 {
+        append_log(&app, "info", &format!("[{}] Not enough messages to summarize, skipping", fname));
         app.emit(&format!("stream-done-{}", stream_id), "")
             .ok();
         return Ok(());
@@ -547,11 +679,19 @@ async fn summarize_conversation(
         }),
     ];
 
-    let full = stream_ollama(&app, messages, &stream_id).await?;
-    let mut data = load_insights_data(&app, &file_id);
-    data["conversation_summary"] = serde_json::Value::String(full);
-    save_insights_data(&app, &file_id, &data);
-    Ok(())
+    match stream_ollama(&app, messages, &stream_id).await {
+        Ok(full) => {
+            let mut data = load_insights_data(&app, &file_id);
+            data["conversation_summary"] = serde_json::Value::String(full);
+            save_insights_data(&app, &file_id, &data);
+            append_log(&app, "info", &format!("[{}] Conversation summary generated and saved", fname));
+            Ok(())
+        }
+        Err(e) => {
+            append_log(&app, "error", &format!("[{}] Conversation summary failed: {}", fname, e));
+            Err(e)
+        }
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -567,24 +707,31 @@ async fn check_ollama(app: AppHandle) -> OllamaStatus {
     let mut binary = find_ollama_binary(Some(&app));
 
     if binary.is_none() {
+        append_log(&app, "info", "Ollama not found — downloading...");
         app.emit("ollama-install-status", "Ollama not found — downloading...").ok();
         match install_ollama(&app).await {
             Ok(path) => {
+                append_log(&app, "info", &format!("Ollama installed at {}", path.display()));
                 binary = Some(path);
             }
             Err(e) => {
+                let msg = format!("Failed to install Ollama: {}", e);
+                append_log(&app, "error", &msg);
                 return OllamaStatus {
                     installed: false,
                     running: false,
                     model_ready: false,
-                    message: format!("Failed to install Ollama: {}", e),
+                    message: msg,
                 };
             }
         }
+    } else {
+        append_log(&app, "info", &format!("Ollama found at {}", binary.as_ref().unwrap().display()));
     }
 
     let running = is_ollama_running().await;
     if !running {
+        append_log(&app, "info", "Starting Ollama server...");
         let ollama_path = binary.unwrap();
         let child = Command::new(&ollama_path)
             .arg("serve")
@@ -605,6 +752,7 @@ async fn check_ollama(app: AppHandle) -> OllamaStatus {
                 }
 
                 if !is_ollama_running().await {
+                    append_log(&app, "error", "Failed to start Ollama server after 10s");
                     return OllamaStatus {
                         installed: true,
                         running: false,
@@ -612,23 +760,31 @@ async fn check_ollama(app: AppHandle) -> OllamaStatus {
                         message: "Failed to start Ollama server".to_string(),
                     };
                 }
+                append_log(&app, "info", "Ollama server started");
             }
             Err(e) => {
+                let msg = format!("Failed to start Ollama: {}", e);
+                append_log(&app, "error", &msg);
                 return OllamaStatus {
                     installed: true,
                     running: false,
                     model_ready: false,
-                    message: format!("Failed to start Ollama: {}", e),
+                    message: msg,
                 };
             }
         }
+    } else {
+        append_log(&app, "info", "Ollama server already running");
     }
 
     app.emit("ollama-install-status", "Checking model...").ok();
+    append_log(&app, "info", "Checking for llama3.2 model...");
     let model_ready = ensure_model_available(&app).await.is_ok();
     let message = if model_ready {
+        append_log(&app, "info", "llama3.2 model ready");
         "Ollama is running with llama3.2".to_string()
     } else {
+        append_log(&app, "error", "Failed to pull llama3.2 model");
         "Failed to pull llama3.2 model — check your internet connection".to_string()
     };
 
@@ -640,11 +796,19 @@ async fn check_ollama(app: AppHandle) -> OllamaStatus {
     }
 }
 
+#[tauri::command]
+async fn get_logs(app: AppHandle) -> Vec<LogEntry> {
+    let state = app.state::<AppLogs>();
+    let logs = state.0.lock().unwrap().clone();
+    logs
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(OllamaProcess(Mutex::new(None)))
+        .manage(AppLogs(Mutex::new(Vec::new())))
         .invoke_handler(tauri::generate_handler![
             list_files,
             upload_files,
@@ -655,6 +819,7 @@ pub fn run() {
             summarize_document,
             summarize_conversation,
             check_ollama,
+            get_logs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

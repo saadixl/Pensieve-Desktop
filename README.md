@@ -21,7 +21,7 @@ A native macOS PDF reader with AI-powered chat and insights, built with Tauri + 
 
 ## Install
 
-Download the latest release: [Pensieve_0.1.0_aarch64.dmg](src-tauri/target/release/bundle/dmg/Pensieve_0.1.0_aarch64.dmg)
+Download the latest release: [Pensieve_0.2.0_aarch64.dmg](src-tauri/target/release/bundle/dmg/Pensieve_0.2.0_aarch64.dmg)
 
 Open the `.dmg` and drag Pensieve to your Applications folder.
 

@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import PdfViewer from "./PdfViewer.jsx";
 import RightPanel from "./RightPanel.jsx";
+import LogsPanel from "./LogsPanel.jsx";
 
 export default function App() {
   const [files, setFiles] = useState([]);
@@ -111,6 +112,14 @@ export default function App() {
     }
   }
 
+  function openLogs() {
+    const logsTab = { id: "__logs__", name: "Logs", type: "logs" };
+    if (!tabs.find((t) => t.id === "__logs__")) {
+      setTabs((prev) => [...prev, logsTab]);
+    }
+    setActiveTab("__logs__");
+  }
+
   function formatSize(bytes) {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -194,6 +203,21 @@ export default function App() {
             <div style={styles.empty}>No files uploaded yet</div>
           )}
         </div>
+
+        <div style={styles.sidebarFooter}>
+          <button
+            style={{
+              ...styles.logsBtn,
+              ...(activeTab === "__logs__" ? styles.logsBtnActive : {}),
+            }}
+            onClick={openLogs}
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+              <path d="M2 3h12M2 6h10M2 9h12M2 12h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
+            Logs
+          </button>
+        </div>
       </aside>
 
       <main style={styles.main}>
@@ -218,7 +242,9 @@ export default function App() {
         )}
 
         <div style={styles.content}>
-          {activeTab ? (
+          {activeTab === "__logs__" ? (
+            <LogsPanel />
+          ) : activeTab ? (
             <div ref={splitRef} style={styles.splitView}>
               {viewMode !== "minimized" && (
                 <div
@@ -384,6 +410,29 @@ const styles = {
     textAlign: "center",
     color: "#666",
     fontSize: 13,
+  },
+  sidebarFooter: {
+    padding: "8px 12px",
+    borderTop: "1px solid #2a2a2a",
+    flexShrink: 0,
+  },
+  logsBtn: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    width: "100%",
+    padding: "8px 12px",
+    background: "transparent",
+    color: "#888",
+    border: "none",
+    borderRadius: 6,
+    fontSize: 13,
+    cursor: "pointer",
+    textAlign: "left",
+  },
+  logsBtnActive: {
+    background: "#252525",
+    color: "#fff",
   },
   main: {
     flex: 1,
