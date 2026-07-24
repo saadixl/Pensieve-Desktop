@@ -808,6 +808,202 @@ async fn check_ollama(app: AppHandle) -> OllamaStatus {
     }
 }
 
+// --- Projects ---
+
+#[derive(Serialize, Deserialize, Clone)]
+struct Project {
+    id: String,
+    name: String,
+    file_ids: Vec<String>,
+}
+
+fn projects_metadata_path(app: &AppHandle) -> PathBuf {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .expect("failed to resolve app data dir")
+        .join("projects");
+    fs::create_dir_all(&dir).ok();
+    dir.join("metadata.json")
+}
+
+fn load_projects(app: &AppHandle) -> Vec<Project> {
+    let path = projects_metadata_path(app);
+    if path.exists() {
+        let data = fs::read_to_string(&path).unwrap_or_default();
+        serde_json::from_str(&data).unwrap_or_default()
+    } else {
+        vec![]
+    }
+}
+
+fn save_projects(app: &AppHandle, projects: &[Project]) {
+    let path = projects_metadata_path(app);
+    let data = serde_json::to_string_pretty(projects).unwrap();
+    fs::write(path, data).ok();
+}
+
+#[tauri::command]
+fn create_project(app: AppHandle, name: String) -> Project {
+    append_log(&app, "info", &format!("Creating project \"{}\"", name));
+    let project = Project {
+        id: Uuid::new_v4().to_string().replace('-', ""),
+        name,
+        file_ids: vec![],
+    };
+    let mut projects = load_projects(&app);
+    projects.push(project.clone());
+    save_projects(&app, &projects);
+    project
+}
+
+#[tauri::command]
+fn list_projects(app: AppHandle) -> Vec<Project> {
+    load_projects(&app)
+}
+
+#[tauri::command]
+fn delete_project(app: AppHandle, project_id: String) -> Result<bool, String> {
+    let mut projects = load_projects(&app);
+    let idx = projects.iter().position(|p| p.id == project_id);
+    if let Some(idx) = idx {
+        let project = projects.remove(idx);
+        append_log(&app, "info", &format!("Deleting project \"{}\"", project.name));
+        save_projects(&app, &projects);
+        Ok(true)
+    } else {
+        Err("Project not found".to_string())
+    }
+}
+
+#[tauri::command]
+fn get_project(app: AppHandle, project_id: String) -> Result<Project, String> {
+    load_projects(&app)
+        .into_iter()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| "Project not found".to_string())
+}
+
+#[derive(Serialize, Clone)]
+struct ProjectFiles {
+    project: Project,
+    files: Vec<FileEntry>,
+}
+
+#[tauri::command]
+fn get_project_files(app: AppHandle, project_id: String) -> Result<ProjectFiles, String> {
+    let projects = load_projects(&app);
+    let project = projects
+        .iter()
+        .find(|p| p.id == project_id)
+        .cloned()
+        .ok_or_else(|| "Project not found".to_string())?;
+    let all_files = load_metadata(&app);
+    let files: Vec<FileEntry> = project
+        .file_ids
+        .iter()
+        .filter_map(|fid| all_files.iter().find(|f| f.id == *fid).cloned())
+        .collect();
+    Ok(ProjectFiles { project, files })
+}
+
+#[tauri::command]
+fn upload_project_files(app: AppHandle, project_id: String, paths: Vec<String>) -> Result<Vec<FileEntry>, String> {
+    let new_entries = upload_files(app.clone(), paths)?;
+    let mut projects = load_projects(&app);
+    let project = projects
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| "Project not found".to_string())?;
+    for entry in &new_entries {
+        if !project.file_ids.contains(&entry.id) {
+            project.file_ids.push(entry.id.clone());
+        }
+    }
+    append_log(&app, "info", &format!("[{}] Added {} file(s) to project", project.name, new_entries.len()));
+    save_projects(&app, &projects);
+    Ok(new_entries)
+}
+
+#[tauri::command]
+fn remove_project_file(app: AppHandle, project_id: String, file_id: String) -> Result<bool, String> {
+    let mut projects = load_projects(&app);
+    let project = projects
+        .iter_mut()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| "Project not found".to_string())?;
+    let fname = file_display_name(&app, &file_id);
+    project.file_ids.retain(|fid| fid != &file_id);
+    append_log(&app, "info", &format!("[{}] Removed \"{}\" from project", project.name, fname));
+    save_projects(&app, &projects);
+    Ok(true)
+}
+
+#[tauri::command]
+async fn chat_project(
+    app: AppHandle,
+    project_id: String,
+    message: String,
+    history: Vec<serde_json::Value>,
+    stream_id: String,
+) -> Result<(), String> {
+    let projects = load_projects(&app);
+    let project = projects
+        .iter()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| "Project not found".to_string())?;
+    append_log(&app, "info", &format!("[Project: {}] Chat: \"{}\" (history: {} messages)", project.name, message, history.len()));
+
+    let char_budget = 60000usize;
+    let per_doc = if project.file_ids.is_empty() { char_budget } else { char_budget / project.file_ids.len() };
+    let mut doc_sections = Vec::new();
+    for fid in &project.file_ids {
+        let path = match resolve_pdf_path(&app, fid) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let fname = file_display_name(&app, fid);
+        let mut text = match extract_pdf_text(&path) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        if text.len() > per_doc {
+            text = format!("{}\n\n[... truncated]", &text[..per_doc]);
+        }
+        doc_sections.push(format!("--- DOCUMENT: {} ---\n{}\n--- END DOCUMENT ---", fname, text));
+    }
+
+    if doc_sections.is_empty() {
+        append_log(&app, "warn", &format!("[Project: {}] No documents available for chat", project.name));
+    }
+
+    let system_prompt = format!(
+        "You are a helpful assistant analyzing multiple PDF documents in a project called \"{}\". \
+         Below are the contents of each document. Use them to answer the user's questions. \
+         You can compare, contrast, and find insights across all documents. \
+         If the answer is not in any document, say so.\n\n{}",
+        project.name,
+        doc_sections.join("\n\n")
+    );
+
+    let mut messages = vec![serde_json::json!({"role": "system", "content": system_prompt})];
+    for h in &history {
+        messages.push(h.clone());
+    }
+    messages.push(serde_json::json!({"role": "user", "content": message}));
+
+    match stream_ollama(&app, messages, &stream_id).await {
+        Ok(_) => {
+            append_log(&app, "info", &format!("[Project: {}] Chat response complete", project.name));
+            Ok(())
+        }
+        Err(e) => {
+            append_log(&app, "error", &format!("[Project: {}] Chat failed: {}", project.name, e));
+            Err(e)
+        }
+    }
+}
+
 #[tauri::command]
 async fn get_logs(app: AppHandle) -> Vec<LogEntry> {
     let state = app.state::<AppLogs>();
@@ -832,6 +1028,14 @@ pub fn run() {
             summarize_conversation,
             check_ollama,
             get_logs,
+            create_project,
+            list_projects,
+            delete_project,
+            get_project,
+            get_project_files,
+            upload_project_files,
+            remove_project_file,
+            chat_project,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

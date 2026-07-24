@@ -5,6 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import PdfViewer from "./PdfViewer.jsx";
 import RightPanel from "./RightPanel.jsx";
 import LogsPanel from "./LogsPanel.jsx";
+import ProjectPanel from "./ProjectPanel.jsx";
 
 export default function App() {
   const [files, setFiles] = useState([]);
@@ -16,6 +17,9 @@ export default function App() {
   const [viewMode, setViewMode] = useState("split");
   const [ollamaStatus, setOllamaStatus] = useState(null);
   const [installMsg, setInstallMsg] = useState(null);
+  const [projects, setProjects] = useState([]);
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [newProjectName, setNewProjectName] = useState("");
   const splitRef = useRef(null);
 
   const onMouseMove = useCallback((e) => {
@@ -50,6 +54,7 @@ export default function App() {
       setInstallMsg(null);
     }).catch(console.error);
     invoke("list_files").then(setFiles).catch(console.error);
+    invoke("list_projects").then(setProjects).catch(console.error);
   }, []);
 
   async function handleUpload() {
@@ -120,6 +125,44 @@ export default function App() {
     setActiveTab("__logs__");
   }
 
+  async function handleCreateProject() {
+    const name = newProjectName.trim();
+    if (!name) return;
+    try {
+      const project = await invoke("create_project", { name });
+      setProjects((prev) => [...prev, project]);
+      setCreatingProject(false);
+      setNewProjectName("");
+      openProject(project);
+    } catch (err) {
+      console.error("Failed to create project:", err);
+    }
+  }
+
+  function openProject(project) {
+    const tab = { id: `project-${project.id}`, name: project.name, type: "project", projectId: project.id };
+    if (!tabs.find((t) => t.id === tab.id)) {
+      setTabs((prev) => [...prev, tab]);
+    }
+    setActiveTab(tab.id);
+  }
+
+  async function deleteProject(id, e) {
+    e.stopPropagation();
+    try {
+      await invoke("delete_project", { projectId: id });
+    } catch {
+      return;
+    }
+    setProjects((prev) => prev.filter((p) => p.id !== id));
+    const tabId = `project-${id}`;
+    setTabs((prev) => prev.filter((t) => t.id !== tabId));
+    if (activeTab === tabId) {
+      const remaining = tabs.filter((t) => t.id !== tabId);
+      setActiveTab(remaining.length ? remaining[remaining.length - 1].id : null);
+    }
+  }
+
   function formatSize(bytes) {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -167,14 +210,71 @@ export default function App() {
           )}
         </div>
 
-        <button
-          style={styles.uploadBtn}
-          onClick={handleUpload}
-          disabled={uploading}
-        >
-          {uploading ? "Uploading..." : "+ Upload PDF"}
-        </button>
+        <div style={styles.sidebarButtons}>
+          <button
+            style={styles.uploadBtn}
+            onClick={handleUpload}
+            disabled={uploading}
+          >
+            {uploading ? "Uploading..." : "+ Upload PDF"}
+          </button>
+          <button
+            style={styles.createProjectBtn}
+            onClick={() => setCreatingProject(true)}
+          >
+            + Create Project
+          </button>
+        </div>
 
+        {creatingProject && (
+          <div style={styles.newProjectRow}>
+            <input
+              style={styles.newProjectInput}
+              value={newProjectName}
+              onChange={(e) => setNewProjectName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleCreateProject();
+                if (e.key === "Escape") { setCreatingProject(false); setNewProjectName(""); }
+              }}
+              placeholder="Project name..."
+              autoFocus
+            />
+            <button style={styles.newProjectOk} onClick={handleCreateProject} disabled={!newProjectName.trim()}>
+              OK
+            </button>
+          </div>
+        )}
+
+        {projects.length > 0 && (
+          <div style={styles.sectionLabel}>Projects</div>
+        )}
+        {projects.map((p) => (
+          <div
+            key={p.id}
+            style={{
+              ...styles.fileItem,
+              ...(activeTab === `project-${p.id}` ? styles.fileItemActive : {}),
+            }}
+            onClick={() => openProject(p)}
+          >
+            <div style={styles.projectIcon}>PRJ</div>
+            <div style={styles.fileInfo}>
+              <div style={styles.fileName}>{p.name}</div>
+              <div style={styles.fileMeta}>{p.file_ids.length} file{p.file_ids.length !== 1 ? "s" : ""}</div>
+            </div>
+            <div
+              style={styles.fileDelete}
+              onClick={(e) => deleteProject(p.id, e)}
+              title="Delete project"
+            >
+              ×
+            </div>
+          </div>
+        ))}
+
+        {(files.length > 0 || projects.length > 0) && files.length > 0 && (
+          <div style={styles.sectionLabel}>Files</div>
+        )}
         <div style={styles.fileList}>
           {files.map((f) => (
             <div
@@ -245,6 +345,11 @@ export default function App() {
         <div style={styles.content}>
           {activeTab === "__logs__" ? (
             <LogsPanel />
+          ) : activeTab && tabs.find((t) => t.id === activeTab)?.type === "project" ? (
+            <ProjectPanel
+              key={activeTab}
+              projectId={tabs.find((t) => t.id === activeTab).projectId}
+            />
           ) : activeTab ? (
             <div ref={splitRef} style={styles.splitView}>
               {viewMode !== "minimized" && (
@@ -336,8 +441,13 @@ const styles = {
     borderRadius: "50%",
     flexShrink: 0,
   },
+  sidebarButtons: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
+    padding: "12px 12px 0",
+  },
   uploadBtn: {
-    margin: "12px 12px 0",
     padding: "10px 16px",
     background: "#2563eb",
     color: "#fff",
@@ -346,6 +456,63 @@ const styles = {
     fontSize: 14,
     fontWeight: 500,
     cursor: "pointer",
+  },
+  createProjectBtn: {
+    padding: "10px 16px",
+    background: "transparent",
+    color: "#2563eb",
+    border: "1px solid #2563eb",
+    borderRadius: 6,
+    fontSize: 14,
+    fontWeight: 500,
+    cursor: "pointer",
+  },
+  newProjectRow: {
+    display: "flex",
+    gap: 6,
+    padding: "8px 12px",
+  },
+  newProjectInput: {
+    flex: 1,
+    background: "#252525",
+    border: "1px solid #333",
+    borderRadius: 6,
+    color: "#e0e0e0",
+    padding: "6px 10px",
+    fontSize: 13,
+    outline: "none",
+    fontFamily: "inherit",
+  },
+  newProjectOk: {
+    padding: "6px 12px",
+    background: "#2563eb",
+    color: "#fff",
+    border: "none",
+    borderRadius: 6,
+    fontSize: 13,
+    cursor: "pointer",
+    flexShrink: 0,
+  },
+  sectionLabel: {
+    padding: "10px 16px 4px",
+    fontSize: 10,
+    fontWeight: 600,
+    color: "#555",
+    textTransform: "uppercase",
+    letterSpacing: "0.05em",
+  },
+  projectIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 6,
+    background: "#7c3aed",
+    color: "#fff",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 9,
+    fontWeight: 700,
+    flexShrink: 0,
   },
   fileList: {
     flex: 1,
