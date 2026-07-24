@@ -299,7 +299,7 @@ export default function ProjectPanel({ projectId }) {
                     <span style={s.accordionArrow}>{isExpanded ? "▾" : "▸"}</span>
                     <div style={s.accordionIcon}>PDF</div>
                     <div style={s.accordionInfo}>
-                      <div style={s.accordionName}>{f.name}</div>
+                      <div style={s.accordionName} title={f.name}>{f.name}</div>
                       <div style={s.accordionMeta}>{formatSize(f.size)}</div>
                     </div>
                     <div style={s.accordionRemove} onClick={(e) => removeFile(f.id, e)} title="Remove from project">
@@ -367,7 +367,7 @@ export default function ProjectPanel({ projectId }) {
                   const isSummarizing = summarizing[f.id];
                   return (
                     <div key={f.id} style={s.insightBlock}>
-                      <div style={s.insightLabel}>{f.name}</div>
+                      <div style={s.insightLabel} title={f.name}>{f.name}</div>
                       {summary ? (
                         <div className="md-content" style={s.summaryContent}>
                           <Markdown>{summary}</Markdown>

@@ -216,13 +216,22 @@ export default function App() {
             onClick={handleUpload}
             disabled={uploading}
           >
-            {uploading ? "Uploading..." : "+ Upload PDF"}
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+              <path d="M3 2h6.5L13 5.5V13a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z" stroke="currentColor" strokeWidth="1.3" fill="none"/>
+              <path d="M9 2v4h4" stroke="currentColor" strokeWidth="1.3" fill="none"/>
+            </svg>
+            {uploading ? "Opening..." : "Open Single PDF"}
           </button>
           <button
             style={styles.createProjectBtn}
             onClick={() => setCreatingProject(true)}
           >
-            + Create Project
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+              <rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.3" fill="none"/>
+              <path d="M2 6h12" stroke="currentColor" strokeWidth="1.3"/>
+              <path d="M8 8.5v3M6.5 10h3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+            </svg>
+            Create New Project
           </button>
         </div>
 
@@ -259,7 +268,7 @@ export default function App() {
           >
             <div style={styles.projectIcon}>PRJ</div>
             <div style={styles.fileInfo}>
-              <div style={styles.fileName}>{p.name}</div>
+              <div style={styles.fileName} title={p.name}>{p.name}</div>
               <div style={styles.fileMeta}>{p.file_ids.length} file{p.file_ids.length !== 1 ? "s" : ""}</div>
             </div>
             <div
@@ -287,7 +296,7 @@ export default function App() {
             >
               <div style={styles.fileIcon}>PDF</div>
               <div style={styles.fileInfo}>
-                <div style={styles.fileName}>{f.name}</div>
+                <div style={styles.fileName} title={f.name}>{f.name}</div>
                 <div style={styles.fileMeta}>{formatSize(f.size)}</div>
               </div>
               <div
@@ -444,28 +453,40 @@ const styles = {
   sidebarButtons: {
     display: "flex",
     flexDirection: "column",
-    gap: 6,
-    padding: "12px 12px 0",
+    gap: 8,
+    padding: "14px 12px 0",
   },
   uploadBtn: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
     padding: "10px 16px",
-    background: "#2563eb",
+    background: "#1e40af",
     color: "#fff",
     border: "none",
-    borderRadius: 6,
-    fontSize: 14,
-    fontWeight: 500,
+    borderRadius: 8,
+    fontSize: 13,
+    fontWeight: 600,
     cursor: "pointer",
+    letterSpacing: "0.01em",
+    transition: "background 0.15s",
   },
   createProjectBtn: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
     padding: "10px 16px",
-    background: "transparent",
-    color: "#2563eb",
-    border: "1px solid #2563eb",
-    borderRadius: 6,
-    fontSize: 14,
-    fontWeight: 500,
+    background: "rgba(37, 99, 235, 0.08)",
+    color: "#60a5fa",
+    border: "1px solid rgba(96, 165, 250, 0.25)",
+    borderRadius: 8,
+    fontSize: 13,
+    fontWeight: 600,
     cursor: "pointer",
+    letterSpacing: "0.01em",
+    transition: "background 0.15s, border-color 0.15s",
   },
   newProjectRow: {
     display: "flex",

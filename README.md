@@ -9,8 +9,8 @@ A native macOS PDF reader with AI-powered chat and insights, built with Tauri + 
 ## Features
 
 - **Zero-Setup Install** — Just open the app. Ollama is downloaded, started, and the AI model is pulled automatically on first launch
-- **Native File Picker** — Open PDFs using the macOS native file dialog
-- **PDF Upload & Management** — Upload multiple PDFs, browse them in a sidebar, delete when no longer needed
+- **Native File Picker** — Open single PDFs or create multi-document projects using the macOS native file dialog
+- **PDF Management** — Browse uploaded PDFs in a sidebar with tooltips for long filenames, delete when no longer needed
 - **In-App PDF Viewer** — Page-by-page rendering with navigation, zoom controls, and text selection
 - **AI Chat** — Ask questions about any uploaded PDF with streaming responses from a local Ollama model
 - **Insights Panel** — Auto-generated document and conversation summaries, persisted across sessions
