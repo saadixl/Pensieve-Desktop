@@ -2,8 +2,8 @@
 
 A native macOS PDF reader with AI-powered chat and insights, built with Tauri + React. Powered by a local Ollama model.
 
-<img width="1351" height="864" alt="Screenshot 2026-07-23 at 12 31 09 AM" src="https://github.com/user-attachments/assets/16d1ab47-aa48-491e-b23b-cc4f24f9cd16" />
-<img width="1330" height="858" alt="Screenshot 2026-07-23 at 12 31 27 AM" src="https://github.com/user-attachments/assets/ef12d258-4362-4474-8402-a867fcbeed65" />
+<img width="1351" height="864" alt="Screenshot 2026-07-23 at 12 31 09 AM" src="https://github.com/user-attachments/assets/16d1ab47-aa48-491e-b23b-cc4f24f9cd16" />
+<img width="1330" height="858" alt="Screenshot 2026-07-23 at 12 31 27 AM" src="https://github.com/user-attachments/assets/ef12d258-4362-4474-8402-a867fcbeed65" />
 
 
 ## Features
@@ -19,11 +19,14 @@ A native macOS PDF reader with AI-powered chat and insights, built with Tauri + 
 - **Layout Modes** — Minimize, maximize, or split the PDF viewer with toolbar controls
 - **Suggested Questions** — Clickable prompts to get started quickly
 - **Markdown Rendering** — Chat responses and insights render formatted markdown
+- **Multi-Document Projects** — Create projects, add multiple PDFs, view them side-by-side in expandable accordions with full PDF rendering, generate per-document summaries in the Insights section, and chat across all documents for cross-document comparisons and analysis
+- **Resizable Project Layout** — Drag to resize the documents and insights/chat panes, with minimize/split/maximize controls matching the single-file view
+- **Comprehensive Logging** — All operations logged with timestamps, viewable in the Logs tab
 - **Fully Local** — All data stays on your machine. No cloud, no accounts, no tracking
 
 ## Install
 
-Download the latest release: [Pensieve_0.2.0_aarch64.dmg](src-tauri/target/release/bundle/dmg/Pensieve_0.2.0_aarch64.dmg)
+Download the latest release: [Pensieve_0.3.0_aarch64.dmg](src-tauri/target/release/bundle/dmg/Pensieve_0.3.0_aarch64.dmg)
 
 Open the `.dmg` and drag Pensieve to your Applications folder.
 

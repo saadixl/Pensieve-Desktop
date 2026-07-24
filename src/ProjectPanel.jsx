@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import Markdown from "react-markdown";
+import PdfViewer from "./PdfViewer";
 
 let streamCounter = 0;
 
@@ -16,14 +17,45 @@ const PROJECT_SUGGESTIONS = [
 export default function ProjectPanel({ projectId }) {
   const [project, setProject] = useState(null);
   const [files, setFiles] = useState([]);
-  const [expandedFile, setExpandedFile] = useState(null);
+  const [expandedFiles, setExpandedFiles] = useState(new Set());
   const [summaries, setSummaries] = useState({});
   const [summarizing, setSummarizing] = useState({});
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [layoutMode, setLayoutMode] = useState("split");
+  const [splitPercent, setSplitPercent] = useState(50);
+  const [dragging, setDragging] = useState(false);
+  const [insightsOpen, setInsightsOpen] = useState(true);
+  const [chatOpen, setChatOpen] = useState(true);
   const bottomRef = useRef(null);
+  const splitRef = useRef(null);
+
+  const onMouseMove = useCallback((e) => {
+    if (!splitRef.current) return;
+    const rect = splitRef.current.getBoundingClientRect();
+    const pct = ((e.clientX - rect.left) / rect.width) * 100;
+    setSplitPercent(Math.min(80, Math.max(20, pct)));
+  }, []);
+
+  const onMouseUp = useCallback(() => {
+    setDragging(false);
+  }, []);
+
+  useEffect(() => {
+    if (!dragging) return;
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    return () => {
+      document.removeEventListener("mousemove", onMouseMove);
+      document.removeEventListener("mouseup", onMouseUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+  }, [dragging, onMouseMove, onMouseUp]);
 
   useEffect(() => {
     loadProject();
@@ -82,7 +114,7 @@ export default function ProjectPanel({ projectId }) {
     try {
       await invoke("remove_project_file", { projectId, fileId });
       setFiles((prev) => prev.filter((f) => f.id !== fileId));
-      if (expandedFile === fileId) setExpandedFile(null);
+      setExpandedFiles((prev) => { const next = new Set(prev); next.delete(fileId); return next; });
     } catch {}
   }
 
@@ -204,133 +236,221 @@ export default function ProjectPanel({ projectId }) {
   const anySummarizing = Object.values(summarizing).some(Boolean);
 
   return (
-    <div style={s.container}>
-      {/* Left: Documents */}
-      <div style={s.docsPane}>
-        <div style={s.docsHeader}>
-          <h2 style={s.projectName}>{project.name}</h2>
-          <span style={s.fileCount}>{files.length} document{files.length !== 1 ? "s" : ""}</span>
-        </div>
-
-        <div style={s.docsActions}>
-          <button style={s.addBtn} onClick={handleAddFiles} disabled={uploading}>
-            {uploading ? "Adding..." : "+ Add PDFs"}
-          </button>
-          {files.length > 0 && !allSummarized && (
-            <button style={s.summarizeAllBtn} onClick={summarizeAll} disabled={anySummarizing}>
-              {anySummarizing ? "Summarizing..." : "Summarize All"}
-            </button>
-          )}
-        </div>
-
-        <div style={s.docsList}>
-          {files.map((f) => {
-            const isExpanded = expandedFile === f.id;
-            const summary = summaries[f.id];
-            const isSummarizing = summarizing[f.id];
-            return (
-              <div key={f.id} style={s.accordion}>
-                <div
-                  style={{ ...s.accordionHeader, ...(isExpanded ? s.accordionHeaderActive : {}) }}
-                  onClick={() => setExpandedFile(isExpanded ? null : f.id)}
+    <div ref={splitRef} style={s.container}>
+      {/* Left pane */}
+      {layoutMode !== "minimized" && (
+        <div style={{ ...s.docsPane, width: layoutMode === "maximized" ? "100%" : `${splitPercent}%` }}>
+          <div style={s.docsHeader}>
+            <h2 style={s.projectName}>{project.name}</h2>
+            <div style={s.headerRight}>
+              <span style={s.fileCount}>{files.length} document{files.length !== 1 ? "s" : ""}</span>
+              <div style={s.layoutGroup}>
+                <button
+                  style={{ ...s.layoutBtn, ...(layoutMode === "minimized" ? s.layoutBtnActive : {}) }}
+                  onClick={() => setLayoutMode("minimized")}
+                  title="Hide documents"
                 >
-                  <span style={s.accordionArrow}>{isExpanded ? "▾" : "▸"}</span>
-                  <div style={s.accordionIcon}>PDF</div>
-                  <div style={s.accordionInfo}>
-                    <div style={s.accordionName}>{f.name}</div>
-                    <div style={s.accordionMeta}>
-                      {formatSize(f.size)}
-                      {summary && " · Summarized"}
-                      {isSummarizing && " · Summarizing..."}
-                    </div>
-                  </div>
-                  <div style={s.accordionRemove} onClick={(e) => removeFile(f.id, e)} title="Remove from project">
-                    ×
-                  </div>
-                </div>
-                {isExpanded && (
-                  <div style={s.accordionBody}>
-                    {summary ? (
-                      <div className="md-content" style={s.summaryContent}>
-                        <Markdown>{summary}</Markdown>
-                      </div>
-                    ) : isSummarizing ? (
-                      <div style={s.summaryPlaceholder}>Generating summary...</div>
-                    ) : (
-                      <button style={s.genSummaryBtn} onClick={() => generateSummary(f.id)}>
-                        Generate Summary
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-          {files.length === 0 && (
-            <div style={s.emptyDocs}>Add PDFs to this project to get started</div>
-          )}
-        </div>
-      </div>
-
-      {/* Resize divider */}
-      <div style={s.divider} />
-
-      {/* Right: Chat */}
-      <div style={s.chatPane}>
-        <div style={s.chatHeader}>
-          <h3 style={s.chatTitle}>Project Chat</h3>
-          <span style={s.chatSubtitle}>Ask across all documents</span>
-        </div>
-
-        <div style={s.chatMessages}>
-          {messages.length === 0 && (
-            <div style={s.chatEmpty}>Ask a question about all documents in this project</div>
-          )}
-          {messages.map((m, i) => (
-            <div key={i} style={{ ...s.msgRow, justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
-              <div style={{ ...s.bubble, ...(m.role === "user" ? s.userBubble : s.assistantBubble) }}>
-                {m.role === "user" ? (
-                  m.content
-                ) : m.content ? (
-                  <div className="md-content"><Markdown>{m.content}</Markdown></div>
-                ) : (
-                  streaming && i === messages.length - 1 ? "..." : ""
-                )}
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                    <rect x="1" y="6" width="12" height="2" rx="0.5" fill="currentColor" />
+                  </svg>
+                </button>
+                <button
+                  style={{ ...s.layoutBtn, ...(layoutMode === "split" ? s.layoutBtnActive : {}) }}
+                  onClick={() => setLayoutMode("split")}
+                  title="Split view"
+                >
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                    <rect x="1" y="1" width="5" height="12" rx="1" stroke="currentColor" strokeWidth="1.5" fill="none" />
+                    <rect x="8" y="1" width="5" height="12" rx="1" stroke="currentColor" strokeWidth="1.5" fill="none" />
+                  </svg>
+                </button>
+                <button
+                  style={{ ...s.layoutBtn, ...(layoutMode === "maximized" ? s.layoutBtnActive : {}) }}
+                  onClick={() => setLayoutMode("maximized")}
+                  title="Maximize documents"
+                >
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                    <rect x="1" y="1" width="12" height="12" rx="1" stroke="currentColor" strokeWidth="1.5" fill="none" />
+                  </svg>
+                </button>
               </div>
             </div>
-          ))}
-          <div ref={bottomRef} />
-        </div>
+          </div>
 
-        {messages.length === 0 && files.length > 0 && (
-          <div style={s.tagCloud}>
-            {PROJECT_SUGGESTIONS.map((q) => (
-              <button key={q} style={s.chip} onClick={() => send(q)} disabled={streaming}>
-                {q}
-              </button>
-            ))}
+          <div style={s.docsActions}>
+            <button style={s.addBtn} onClick={handleAddFiles} disabled={uploading}>
+              {uploading ? "Adding..." : "+ Add PDFs"}
+            </button>
+          </div>
+
+          <div style={s.docsList}>
+            {files.map((f) => {
+              const isExpanded = expandedFiles.has(f.id);
+              return (
+                <div key={f.id} style={s.accordion}>
+                  <div
+                    style={{ ...s.accordionHeader, ...(isExpanded ? s.accordionHeaderActive : {}) }}
+                    onClick={() => setExpandedFiles((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(f.id)) next.delete(f.id); else next.add(f.id);
+                      return next;
+                    })}
+                  >
+                    <span style={s.accordionArrow}>{isExpanded ? "▾" : "▸"}</span>
+                    <div style={s.accordionIcon}>PDF</div>
+                    <div style={s.accordionInfo}>
+                      <div style={s.accordionName}>{f.name}</div>
+                      <div style={s.accordionMeta}>{formatSize(f.size)}</div>
+                    </div>
+                    <div style={s.accordionRemove} onClick={(e) => removeFile(f.id, e)} title="Remove from project">
+                      ×
+                    </div>
+                  </div>
+                  {isExpanded && (
+                    <div style={s.pdfBody}>
+                      <PdfViewer fileId={f.id} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {files.length === 0 && (
+              <div style={s.emptyDocs}>Add PDFs to this project to get started</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {layoutMode === "split" && (
+        <div style={s.resizeHandle} onMouseDown={() => setDragging(true)}>
+          <div style={s.resizeGrip} />
+        </div>
+      )}
+
+      {/* Right pane - matching single-file RightPanel */}
+      {layoutMode !== "maximized" && (
+        <div style={{ ...s.rightPane, width: layoutMode === "minimized" ? "100%" : `calc(${100 - splitPercent}% - 6px)` }}>
+        {/* Insights section */}
+        {layoutMode === "minimized" && (
+          <div style={s.layoutBar}>
+            <button style={s.layoutBtn} onClick={() => setLayoutMode("split")} title="Split view">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <rect x="1" y="1" width="5" height="12" rx="1" stroke="currentColor" strokeWidth="1.5" fill="none" />
+                <rect x="8" y="1" width="5" height="12" rx="1" stroke="currentColor" strokeWidth="1.5" fill="none" />
+              </svg>
+            </button>
+            <button style={s.layoutBtn} onClick={() => setLayoutMode("maximized")} title="Maximize documents">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <rect x="1" y="1" width="12" height="12" rx="1" stroke="currentColor" strokeWidth="1.5" fill="none" />
+              </svg>
+            </button>
           </div>
         )}
 
-        <div style={s.inputRow}>
-          <textarea
-            style={s.chatInput}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={files.length ? "Ask about all documents..." : "Add PDFs first..."}
-            rows={1}
-            disabled={streaming || files.length === 0}
-          />
-          <button
-            style={{ ...s.sendBtn, opacity: streaming || !input.trim() ? 0.5 : 1 }}
-            onClick={() => send()}
-            disabled={streaming || !input.trim()}
-          >
-            Send
-          </button>
+        <div style={{ ...s.section, flex: insightsOpen ? 1 : "none" }}>
+          <div style={s.sectionHeader} onClick={() => setInsightsOpen((v) => !v)}>
+            <span style={s.chevron}>{insightsOpen ? "▼" : "▶"}</span>
+            <span style={s.sectionTitle}>Insights</span>
+          </div>
+          {insightsOpen && (
+            <div style={s.sectionBody}>
+              <div style={s.insightsScroll}>
+                {files.length > 0 && !allSummarized && (
+                  <div style={s.insightsActions}>
+                    <button style={s.summarizeAllBtn} onClick={summarizeAll} disabled={anySummarizing}>
+                      {anySummarizing ? "Summarizing..." : "Summarize All"}
+                    </button>
+                  </div>
+                )}
+                {files.map((f) => {
+                  const summary = summaries[f.id];
+                  const isSummarizing = summarizing[f.id];
+                  return (
+                    <div key={f.id} style={s.insightBlock}>
+                      <div style={s.insightLabel}>{f.name}</div>
+                      {summary ? (
+                        <div className="md-content" style={s.summaryContent}>
+                          <Markdown>{summary}</Markdown>
+                        </div>
+                      ) : isSummarizing ? (
+                        <div style={s.summaryPlaceholder}>Generating summary...</div>
+                      ) : (
+                        <button style={s.genSummaryBtn} onClick={() => generateSummary(f.id)}>
+                          Generate Summary
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+                {files.length === 0 && (
+                  <div style={s.emptyDocs}>Add documents first to generate insights</div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Chat section */}
+        <div style={{ ...s.section, flex: chatOpen ? 1 : "none" }}>
+          <div style={s.sectionHeader} onClick={() => setChatOpen((v) => !v)}>
+            <span style={s.chevron}>{chatOpen ? "▼" : "▶"}</span>
+            <span style={s.sectionTitle}>Chat</span>
+          </div>
+          {chatOpen && (
+            <div style={s.sectionBody}>
+              <div style={s.chatMessages}>
+                {messages.length === 0 && (
+                  <div style={s.chatEmpty}>Ask a question about all documents in this project</div>
+                )}
+                {messages.map((m, i) => (
+                  <div key={i} style={{ ...s.msgRow, justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
+                    <div style={{ ...s.bubble, ...(m.role === "user" ? s.userBubble : s.assistantBubble) }}>
+                      {m.role === "user" ? (
+                        m.content
+                      ) : m.content ? (
+                        <div className="md-content"><Markdown>{m.content}</Markdown></div>
+                      ) : (
+                        streaming && i === messages.length - 1 ? "..." : ""
+                      )}
+                    </div>
+                  </div>
+                ))}
+                <div ref={bottomRef} />
+              </div>
+
+              {messages.length === 0 && files.length > 0 && (
+                <div style={s.tagCloud}>
+                  {PROJECT_SUGGESTIONS.map((q) => (
+                    <button key={q} style={s.chip} onClick={() => send(q)} disabled={streaming}>
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <div style={s.inputRow}>
+                <textarea
+                  style={s.chatInput}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder={files.length ? "Ask about all documents..." : "Add PDFs first..."}
+                  rows={1}
+                  disabled={streaming || files.length === 0}
+                />
+                <button
+                  style={{ ...s.sendBtn, opacity: streaming || !input.trim() ? 0.5 : 1 }}
+                  onClick={() => send()}
+                  disabled={streaming || !input.trim()}
+                >
+                  Send
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
+      )}
     </div>
   );
 }
@@ -342,13 +462,13 @@ const s = {
     background: "#111",
   },
 
-  // Left pane - documents
+  // Left pane
   docsPane: {
-    width: "40%",
-    minWidth: 300,
+    height: "100%",
+    overflow: "hidden",
+    flexShrink: 0,
     display: "flex",
     flexDirection: "column",
-    borderRight: "1px solid #2a2a2a",
   },
   docsHeader: {
     display: "flex",
@@ -368,6 +488,50 @@ const s = {
     fontSize: 12,
     color: "#666",
   },
+  headerRight: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+  },
+  layoutGroup: {
+    display: "flex",
+    alignItems: "center",
+    gap: 4,
+  },
+  layoutBtn: {
+    background: "transparent",
+    color: "#888",
+    border: "1px solid transparent",
+    borderRadius: 4,
+    width: 26,
+    height: 26,
+    cursor: "pointer",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  layoutBtnActive: {
+    color: "#fff",
+    background: "#333",
+    borderColor: "#555",
+  },
+  resizeHandle: {
+    width: 6,
+    cursor: "col-resize",
+    background: "#2a2a2a",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+    transition: "background 0.15s",
+  },
+  resizeGrip: {
+    width: 2,
+    height: 32,
+    borderRadius: 1,
+    background: "#555",
+  },
+
   docsActions: {
     display: "flex",
     gap: 8,
@@ -379,16 +543,6 @@ const s = {
     background: "#2563eb",
     color: "#fff",
     border: "none",
-    borderRadius: 6,
-    fontSize: 13,
-    fontWeight: 500,
-    cursor: "pointer",
-  },
-  summarizeAllBtn: {
-    padding: "8px 16px",
-    background: "transparent",
-    color: "#2563eb",
-    border: "1px solid #2563eb",
     borderRadius: 6,
     fontSize: 13,
     fontWeight: 500,
@@ -473,16 +627,104 @@ const s = {
     borderRadius: 4,
     flexShrink: 0,
   },
-  accordionBody: {
-    padding: "4px 12px 12px 54px",
+  pdfBody: {
+    height: "70vh",
+    borderTop: "1px solid #2a2a2a",
+    borderBottom: "1px solid #2a2a2a",
+    marginBottom: 4,
+  },
+  // Right pane - matching RightPanel
+  layoutBar: {
+    display: "flex",
+    alignItems: "center",
+    gap: 6,
+    padding: "6px 14px",
+    background: "#1a1a1a",
+    borderBottom: "1px solid #2a2a2a",
+    flexShrink: 0,
+  },
+  rightPane: {
+    height: "100%",
+    overflow: "hidden",
+    flexShrink: 0,
+    display: "flex",
+    flexDirection: "column",
+    background: "#141414",
+  },
+  section: {
+    display: "flex",
+    flexDirection: "column",
+    minHeight: 0,
+    overflow: "hidden",
+  },
+  sectionHeader: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "8px 14px",
+    background: "#1a1a1a",
+    borderBottom: "1px solid #2a2a2a",
+    cursor: "pointer",
+    userSelect: "none",
+    flexShrink: 0,
+  },
+  chevron: {
+    fontSize: 10,
+    color: "#888",
+    width: 12,
+  },
+  sectionTitle: {
+    fontSize: 12,
+    fontWeight: 600,
+    color: "#ccc",
+    textTransform: "uppercase",
+    letterSpacing: "0.05em",
+  },
+  sectionBody: {
+    flex: 1,
+    overflow: "hidden",
+    display: "flex",
+    flexDirection: "column",
+  },
+
+  // Insights section content
+  insightsScroll: {
+    flex: 1,
+    overflowY: "auto",
+    padding: "12px 14px",
+  },
+  insightsActions: {
+    marginBottom: 12,
+  },
+  summarizeAllBtn: {
+    padding: "8px 16px",
+    background: "transparent",
+    color: "#2563eb",
+    border: "1px solid #2563eb",
+    borderRadius: 6,
+    fontSize: 13,
+    fontWeight: 500,
+    cursor: "pointer",
+  },
+  insightBlock: {
+    marginBottom: 12,
+  },
+  insightLabel: {
+    fontSize: 11,
+    fontWeight: 600,
+    color: "#888",
+    textTransform: "uppercase",
+    letterSpacing: "0.04em",
+    marginBottom: 8,
   },
   summaryContent: {
     fontSize: 13,
-    color: "#bbb",
+    color: "#ccc",
     lineHeight: 1.6,
+    wordBreak: "break-word",
   },
   summaryPlaceholder: {
-    fontSize: 13,
+    fontSize: 12,
     color: "#666",
     fontStyle: "italic",
   },
@@ -495,39 +737,13 @@ const s = {
     fontSize: 12,
     cursor: "pointer",
   },
-
-  // Divider
-  divider: {
-    width: 1,
+  insightDivider: {
+    height: 1,
     background: "#2a2a2a",
-    flexShrink: 0,
+    margin: "12px 0",
   },
 
-  // Right pane - chat
-  chatPane: {
-    flex: 1,
-    display: "flex",
-    flexDirection: "column",
-    minWidth: 0,
-  },
-  chatHeader: {
-    display: "flex",
-    alignItems: "baseline",
-    gap: 10,
-    padding: "16px 20px",
-    borderBottom: "1px solid #2a2a2a",
-    flexShrink: 0,
-  },
-  chatTitle: {
-    fontSize: 14,
-    fontWeight: 600,
-    color: "#fff",
-    margin: 0,
-  },
-  chatSubtitle: {
-    fontSize: 12,
-    color: "#666",
-  },
+  // Chat section content
   chatMessages: {
     flex: 1,
     overflowY: "auto",

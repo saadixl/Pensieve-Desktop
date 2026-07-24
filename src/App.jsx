@@ -317,7 +317,7 @@ export default function App() {
             </svg>
             Logs
           </button>
-          <span style={styles.version}>v0.2.0</span>
+          <span style={styles.version}>v0.3.0</span>
         </div>
       </aside>
 
