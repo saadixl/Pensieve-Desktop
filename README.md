@@ -2,8 +2,9 @@
 
 A native macOS PDF reader with AI-powered chat and insights, built with Tauri + React. Powered by a local Ollama model.
 
-<img width="1351" height="864" alt="Screenshot 2026-07-23 at 12 31 09 AM" src="https://github.com/user-attachments/assets/16d1ab47-aa48-491e-b23b-cc4f24f9cd16" />
-<img width="1330" height="858" alt="Screenshot 2026-07-23 at 12 31 27 AM" src="https://github.com/user-attachments/assets/ef12d258-4362-4474-8402-a867fcbeed65" />
+<img width="1512" height="949" alt="Screenshot 2026-07-25 at 1 19 26 AM" src="https://github.com/user-attachments/assets/0c09182c-e267-4ba3-8621-d259c47a4d5b" />
+<img width="1512" height="951" alt="Screenshot 2026-07-25 at 1 18 57 AM" src="https://github.com/user-attachments/assets/fa06a6e9-d498-4f17-920e-4a91589afc8a" />
+<img width="1512" height="952" alt="Screenshot 2026-07-25 at 1 19 49 AM" src="https://github.com/user-attachments/assets/a812dd84-02d8-4dcc-87fe-876580573e04" />
 
 
 ## Features
